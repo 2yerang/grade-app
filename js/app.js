@@ -6,8 +6,8 @@ import { openCourseSheet } from './ui/sheet.js';
 import { esc, icon, fmtGpa, fmtCr } from './ui/h.js';
 import { TERMS, TERM_BY_ID, LETTERS, categoryInfo } from './domain/grades.js';
 import { semName, sortSemesters, cumulative, waivedCredits, allCourses, isSeasonal } from './domain/calc.js';
-import { waiveCheck, findCourse, cloneScenario, nextTerm } from './domain/rules.js';
-import { waiveAdvice, requiredAverage } from './domain/advisor.js';
+import { waiveCheck, findCourse, cloneScenario, nextTerm, syncFromCurrent } from './domain/rules.js';
+import { planAdvice } from './domain/advisor.js';
 
 const root = document.getElementById('root');
 mountLayer(document.getElementById('layer'));
@@ -29,7 +29,11 @@ function applyTheme() {
   if (t === 'system') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.dataset.theme = t;
   const dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#181C23' : '#FFFFFF');
+  // 테마를 직접 고른 경우 두 meta(라이트/다크용) 모두 같은 색으로
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
+    const forDark = (m.getAttribute('media') || '').includes('dark');
+    m.setAttribute('content', t === 'system' ? (forDark ? '#181C23' : '#FFFFFF') : dark ? '#181C23' : '#FFFFFF');
+  });
 }
 
 function semById(scn, id) { return scn.semesters.find((s) => s.id === id); }
@@ -295,6 +299,46 @@ function ensurePlannedSemester(scn) {
   return s;
 }
 
+/** 시뮬레이션: 재수강 예정 과목을 예정 학기에 자동으로 넣는다 */
+function addAutoRetake(scn, c) {
+  const s = ensurePlannedSemester(scn);
+  s.courses.push({
+    id: uid('crs'), name: c.name, credits: c.credits, category: c.category, isRequired: c.isRequired, delivery: c.delivery, track: c.track,
+    plan: 'none', planGrade: null, gradingType: 'letter', grade: c.planGrade, retakeOf: c.id, courseCode: c.courseCode,
+    waived: false, waivedAt: null, assumption: 'retake', autoFromPlan: c.id,
+  });
+  return s;
+}
+
+/** 탭의 재수강·포기 계획을 모두 해제 (시뮬레이션의 자동 재수강 과목·포기 가정 포함) */
+function clearPlans(scn) {
+  const sim = scn.kind === 'simulation';
+  for (const s of scn.semesters) s.courses = s.courses.filter((x) => !x.autoFromPlan);
+  for (const { c } of allCourses(scn)) {
+    if (c.plan === 'waive' && sim) { c.waived = false; c.waivedAt = null; if (c.assumption === 'waive') c.assumption = null; }
+    c.plan = 'none';
+  }
+}
+
+/** 추천 계획을 탭에 적용 */
+function applyPlanSet(scn, row, grade) {
+  const sim = scn.kind === 'simulation';
+  clearPlans(scn);
+  for (const x of row.retakes) {
+    const c = findCourse(scn, x.c.id)?.c;
+    if (!c) continue;
+    c.plan = 'retake';
+    c.planGrade = grade;
+    if (sim) addAutoRetake(scn, c);
+  }
+  for (const x of row.waives) {
+    const c = findCourse(scn, x.c.id)?.c;
+    if (!c) continue;
+    c.plan = 'waive';
+    if (sim) { c.waived = true; c.waivedAt = null; if (!c.assumption) c.assumption = 'waive'; }
+  }
+}
+
 async function togglePlan(kind, id) {
   const scn = activeScenario();
   const sim = isSim();
@@ -311,12 +355,7 @@ async function togglePlan(kind, id) {
     c.plan = 'retake';
     c.planGrade = c.planGrade || st().retakeCap;
     if (sim) {
-      const s = ensurePlannedSemester(scn);
-      s.courses.push({
-        id: uid('crs'), name: c.name, credits: c.credits, category: c.category, isRequired: c.isRequired, delivery: c.delivery, track: c.track,
-        plan: 'none', planGrade: null, gradingType: 'letter', grade: c.planGrade, retakeOf: c.id, courseCode: c.courseCode,
-        waived: false, waivedAt: null, assumption: 'retake', autoFromPlan: c.id,
-      });
+      const s = addAutoRetake(scn, c);
       commit();
       return toast(`${semName(s)}에 재수강 과목을 넣었습니다`);
     }
@@ -378,7 +417,8 @@ async function tabMenu() {
     actions: [
       { id: 'rename', label: '이름 변경' },
       { id: 'dup', label: '복제' },
-      { id: 'apply', label: '현재에 반영', hint: '예정 학기 과목·학점포기를 골라 가져오기' },
+      { id: 'pull', label: '현재에서 불러오기', hint: '현재 탭에 추가·수정한 학기·과목·성적을 이 시뮬레이션으로' },
+      { id: 'apply', label: '현재에 반영', hint: '예정 학기 과목·학점포기를 골라 현재 탭으로' },
       { id: 'compare', label: '비교 보기' },
       { id: 'delete', label: '삭제', danger: true },
     ],
@@ -389,6 +429,7 @@ async function tabMenu() {
   }
   if (a === 'dup') createSim(scn, `${scn.name} 복제`);
   if (a === 'apply') applyToCurrent();
+  if (a === 'pull') pullFromCurrent();
   if (a === 'compare') go({ name: 'compare' });
   if (a === 'delete') {
     const n = allCourses(scn).length;
@@ -399,6 +440,29 @@ async function tabMenu() {
     save();
     go({ name: 'dashboard' });
   }
+}
+
+async function pullFromCurrent() {
+  const sim = activeScenario();
+  if (sim.kind !== 'simulation') return;
+  const dry = cloneScenario(sim);
+  const n = syncFromCurrent(dry, currentScenario());
+  if (!n.addedSem && !n.addedCourse && !n.updated && !n.removed) return toast('현재 탭과 다른 점이 없습니다');
+  const parts = [];
+  if (n.addedSem) parts.push(`새 학기 ${n.addedSem}개`);
+  if (n.addedCourse) parts.push(`새 과목 ${n.addedCourse}개`);
+  if (n.updated) parts.push(`바뀐 과목 ${n.updated}개`);
+  if (n.removed) parts.push(`현재 탭에서 지운 과목 ${n.removed}개 삭제`);
+  const ok = await confirmDialog({
+    title: '현재에서 불러오기',
+    body: `현재 탭의 변경을 ${esc(sim.name)}에 가져옵니다: ${parts.join(', ')}.`,
+    note: '이 시뮬레이션에서 직접 바꾼 과목(가정 표시), 예정 학기, 재수강·포기 계획은 그대로 둡니다.',
+    ok: '불러오기',
+  });
+  if (!ok) return;
+  syncFromCurrent(sim, currentScenario());
+  commit();
+  toast(`불러왔습니다 · ${parts.join(', ')}`);
 }
 
 async function applyToCurrent() {
@@ -459,35 +523,52 @@ async function applyToCurrent() {
   toast(`현재 탭에 과목 ${nc}개${nw ? `, 학점포기 ${nw}건` : ''}을 반영했습니다`);
 }
 
-async function runAdvisor() {
+function runAdvisor() {
   const scn = activeScenario();
-  const r = waiveAdvice(scn, st());
-  state.ui.advisor = { scnId: scn.id, base: r.base.gpa, results: r.results, remain: r.remain };
+  state.ui.advisor = { scnId: scn.id, grade: state.ui.advisor?.grade || st().retakeCap };
   render();
-  root.querySelector('.adv-grid, .content')?.scrollIntoView({ block: 'nearest' });
+  root.querySelector('#advice')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
-function applyAdvice(idx) {
+function adviceRow(idx) {
+  const scn = activeScenario();
   const adv = state.ui.advisor;
-  const r = adv?.results[idx];
-  if (!r) return;
-  const ids = new Set(r.items.map((i) => i.c.id));
+  if (!adv) return null;
+  const r = planAdvice(scn, st(), { retakeGrade: adv.grade });
+  return { row: r.rows[idx], grade: r.grade };
+}
+
+async function applyAdvice(idx, asNew) {
+  const x = adviceRow(idx);
+  if (!x?.row) return;
+  const { row, grade } = x;
   const from = activeScenario();
-  state.ui.advisor = null;
-  createSim(from, nextSimName('포기 추천'), (x) => {
-    for (const { c } of allCourses(x)) if (ids.has(c.id)) { c.waived = true; c.plan = 'waive'; c.assumption = 'waive'; }
-  });
-  toast(`학점포기 ${ids.size}과목을 가정한 시뮬레이션을 만들었습니다`);
+  const desc = `재수강 ${row.retakes.length}과목 · 학점포기 ${fmtCr(row.waiveCredits)}학점`;
+  if (asNew) {
+    createSim(from, nextSimName('추천 계획'), (s) => applyPlanSet(s, row, grade));
+    state.ui.advisor = { scnId: activeScenario().id, grade };
+    render();
+    return toast(`${desc}을 적용한 시뮬레이션을 만들었습니다`);
+  }
+  const hasPlan = allCourses(from).some(({ c }) => c.plan !== 'none');
+  if (hasPlan) {
+    const ok = await confirmDialog({ title: '추천 계획 적용', body: `지금 고른 재수강·포기 계획을 지우고 추천 계획(${desc})으로 바꿉니다.`, ok: '바꾸기' });
+    if (!ok) return;
+  }
+  applyPlanSet(from, row, grade);
+  commit();
+  toast(from.kind === 'simulation' ? `${desc}을 이 탭에 적용했습니다` : `${desc}을 계획으로 표시했습니다 (실제 학점포기는 과목 메뉴에서)`);
 }
 
 async function runTarget() {
   const scn = activeScenario();
   const g = cumulative(scn, st()).gpa;
+  const prev = state.ui.target;
   const v = await promptDialog({
     title: '목표 평점 역산',
     fields: [
-      { name: 'target', label: '목표 누적 평점', type: 'number', value: g != null ? Math.min(4.5, Math.ceil((g + 0.05) * 10) / 10).toFixed(2) : '4.00' },
-      { name: 'credits', label: '다음 학기 등급평가 학점', type: 'number', value: '18' },
+      { name: 'target', label: '목표 누적 평점', type: 'number', value: prev ? prev.target.toFixed(2) : g != null ? Math.min(4.5, Math.ceil((g + 0.05) * 10) / 10).toFixed(2) : '4.00' },
+      { name: 'credits', label: '다음 학기 등급평가 학점', type: 'number', value: prev ? String(prev.credits) : '18' },
     ],
     ok: '계산',
     validate: (x) => {
@@ -498,9 +579,9 @@ async function runTarget() {
     },
   });
   if (!v) return;
-  const t = Number(v.target), cr = Number(v.credits);
-  state.ui.target = { scnId: scn.id, target: t, credits: cr, res: requiredAverage(scn, st(), t, cr) };
+  state.ui.target = { scnId: scn.id, target: Number(v.target), credits: Number(v.credits) };
   render();
+  root.querySelector('#target')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
 // ── 설정 ──
@@ -655,11 +736,14 @@ root.addEventListener('click', (e) => {
     case 'import': return importFile();
     case 'reset': return resetAll();
     case 'advisor': return runAdvisor();
-    case 'advisor-apply': return applyAdvice(Number(t.dataset.idx));
+    case 'advice-apply': return applyAdvice(Number(t.dataset.idx), false);
+    case 'advice-new': return applyAdvice(Number(t.dataset.idx), true);
+    case 'advice-grade': state.ui.advisor = { ...state.ui.advisor, grade: t.dataset.v }; return render();
     case 'close-advisor': state.ui.advisor = null; return render();
     case 'target': return runTarget();
     case 'close-target': state.ui.target = null; return render();
     case 'apply-to-current': return applyToCurrent();
+    case 'pull-from-current': return pullFromCurrent();
     case 'plan': return togglePlan(t.dataset.kind, id);
     case 'expand': state.ui.expanded[id] = !state.ui.expanded[id]; return render();
     case 'plans-seg': state.ui.plansSeg = t.dataset.v; return render();

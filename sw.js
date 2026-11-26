@@ -1,5 +1,5 @@
 // 오프라인 실행용 서비스 워커. 파일을 바꿔 배포할 때는 VERSION을 올린다.
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.1.0';
 const CACHE = `grade-app-${VERSION}`;
 const SHELL = [
   './',

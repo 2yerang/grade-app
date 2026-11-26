@@ -2,10 +2,12 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- viewport-fit=cover를 쓰지 않는다: 내용이 상태바 아래로 들어가면 iPadOS가 반투명 그라데이션을 덧씌움 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>성적 관리</title>
   <meta name="description" content="한양대 학사 규정 기준 학기별 성적 관리 · 평점·백분위·재수강·학점포기 시뮬레이션">
-  <meta name="theme-color" content="#FFFFFF">
+  <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#181C23" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">

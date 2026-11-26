@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultSettings } from '../js/domain/grades.js';
 import { summarize, semesterStats, buildRetake, cumulative } from '../js/domain/calc.js';
-import { waiveCheck, planLists, retakeOriginOptions, applyPlans, compareRetakeVsWaive } from '../js/domain/rules.js';
+import { waiveCheck, planLists, retakeOriginOptions, applyPlans, compareRetakeVsWaive, retakeSemesterImpact, syncFromCurrent } from '../js/domain/rules.js';
 import { checkRegistration } from '../js/domain/registration.js';
-import { waiveAdvice, requiredAverage } from '../js/domain/advisor.js';
+import { planAdvice, requiredAverage, targetAnalysis } from '../js/domain/advisor.js';
 
 let n = 0;
 const C = (o) => ({ id: `c${++n}`, name: o.name || `과목${n}`, credits: 3, category: '전공핵심', isRequired: false, delivery: 'offline',
@@ -169,19 +169,92 @@ test('계절학기 직전 정규학기 수강 과목 신청 불가', () => {
   assert.equal(checkRegistration(s, st).errors.length, 1);
 });
 
-test('학점포기 추천: 9학점 이내, 상승폭 순', () => {
+test('통합 추천: 재수강 수별 최적, 필수·일반선택 포기 제외, 9학점 이내', () => {
   const s = scn(S(2024, '1', [
     C({ grade: 'A+' }), C({ grade: 'A+' }), C({ grade: 'C0' }), C({ grade: 'B0' }), C({ grade: 'D0', isRequired: true }),
     C({ grade: 'C+', category: '일반선택' }), C({ grade: 'B+' }), C({ grade: 'C+', credits: 6 }),
   ]));
-  const r = waiveAdvice(s, st);
-  assert.ok(r.results.length > 0 && r.results.length <= 3);
-  for (const x of r.results) {
-    assert.ok(x.credits <= 9);
-    assert.ok(x.delta > 0);
-    assert.ok(!x.items.some((i) => i.c.isRequired || i.c.category === '일반선택'));
+  const r = planAdvice(s, st);
+  assert.ok(r.rows.length >= 2);
+  assert.equal(r.rows[0].k, 0);
+  for (const row of r.rows) {
+    assert.ok(row.waiveCredits <= 9);
+    assert.ok(!row.waives.some((x) => x.c.isRequired || x.c.category === '일반선택'));
+    const ids = new Set(row.retakes.map((x) => x.c.id));
+    assert.ok(!row.waives.some((x) => ids.has(x.c.id))); // 한 과목은 하나만
   }
-  assert.ok(r.results[0].gpa >= r.results[1].gpa);
+  for (let i = 1; i < r.rows.length; i++) assert.ok(r.rows[i].gpa > r.rows[i - 1].gpa);
+  // 재수강 1과목이면 효과가 가장 큰 D0(필수, 포기 불가) 과목
+  assert.equal(r.rows[1].retakes[0].c.grade, 'D0');
+});
+
+test('통합 추천: B0를 두고 B+를 포기하지 않는다', () => {
+  const s = scn(S(2024, '1', [C({ grade: 'A0', credits: 12 }), C({ grade: 'B+' }), C({ grade: 'B0' })]), );
+  const st2 = { ...st, waiveLimit: 3 };
+  const r = planAdvice(s, st2, { maxRetake: 0 });
+  assert.deepEqual(r.rows[0].waives.map((x) => x.c.grade), ['B0']);
+});
+
+test('통합 추천: 이미 세운 계획도 후보에 다시 넣고 한도를 쓰지 않은 것으로 본다', () => {
+  const a = C({ grade: 'C0', category: '전공심화', plan: 'waive', waived: true, assumption: 'waive' });
+  const b = C({ grade: 'D0', category: '전공심화' });
+  const s = scn(S(2024, '1', [C({ grade: 'A0', credits: 12 }), a, b, C({ grade: 'B0', category: '전공심화', credits: 3 })]));
+  const r = planAdvice(s, { ...st, waiveLimit: 6 }, { maxRetake: 0 });
+  assert.equal(r.remain, 6);
+  assert.deepEqual(r.rows[0].waives.map((x) => x.c.grade).sort(), ['C0', 'D0']);
+  assert.equal(r.rows[0].matchesCurrent, false);
+});
+
+test('통합 추천: 같은 결과의 다른 조합은 대안으로 묶는다', () => {
+  const s = scn(S(2024, '1', [C({ grade: 'A0', credits: 12 }), C({ name: '가', grade: 'B0' }), C({ name: '나', grade: 'B0' })]));
+  const r = planAdvice(s, { ...st, waiveLimit: 3 }, { maxRetake: 0 });
+  assert.equal(r.rows[0].waives.length, 1);
+  assert.equal(r.rows[0].alts.length, 1);
+});
+
+test('현재에서 불러오기: 새 학기·성적 변경·삭제는 가져오고 가정은 유지', () => {
+  const a = C({ grade: null }), b = C({ grade: 'B0' }), gone = C({ grade: 'A0' }), edited = C({ grade: 'C0' });
+  const cur = scn(S(2024, '1', [a, b, gone, edited]));
+  const sim = JSON.parse(JSON.stringify(cur));
+  sim.kind = 'simulation';
+  sim.semesters[0].courses.find((x) => x.id === edited.id).grade = 'A+';
+  sim.semesters[0].courses.find((x) => x.id === edited.id).assumption = 'edited';
+  sim.semesters.push(S(2027, '1', [C({ grade: 'A0', assumption: 'planned' })], { isPlanned: true }));
+  // 현재 탭에서 변경
+  a.grade = 'A0';
+  cur.semesters[0].courses = cur.semesters[0].courses.filter((x) => x !== gone);
+  cur.semesters.push(S(2025, '1', [C({ grade: 'B+' })]));
+  edited.grade = 'D0';
+  const n = syncFromCurrent(sim, cur);
+  assert.deepEqual(n, { addedSem: 1, addedCourse: 1, updated: 1, removed: 1 });
+  const g = (id) => sim.semesters.flatMap((s) => s.courses).find((x) => x.id === id);
+  assert.equal(g(a.id).grade, 'A0');
+  assert.equal(g(edited.id).grade, 'A+'); // 가정 유지
+  assert.equal(g(gone.id), undefined);
+  assert.ok(sim.semesters.some((s) => s.isPlanned)); // 예정 학기 유지
+});
+
+test('재수강 계획의 학기 평점 영향 (옵션별)', () => {
+  const orig = C({ grade: 'C0', plan: 'retake', planGrade: 'A0' });
+  const s = scn(S(2024, '1', [orig, C({ grade: 'A0' })]));
+  const [x] = retakeSemesterImpact(s, st);
+  assert.equal(x.before, 3.0);
+  assert.equal(x.keep, 3.0);
+  assert.equal(x.exclude, 4.0);
+  assert.equal(x.replace, 4.0);
+  assert.equal(x.current, 3.0);
+});
+
+test('목표 평점 역산: 4.5만 받아도 최소 학점, 계획 반영 비교', () => {
+  // 누적 3.0 (18학점), 목표 3.5 → 부족분 9 → 4.5면 최소 9학점, A0면 18학점
+  const x = C({ grade: 'D0', credits: 3, category: '전공심화', plan: 'retake', planGrade: 'A0' });
+  const s = scn(S(2024, '1', [C({ grade: 'B0', credits: 15 }), { ...x, grade: 'B0' }]));
+  const r = targetAnalysis(s, st, 3.5, 18);
+  assert.equal(r.rows[0].minMax, 9);
+  assert.equal(r.rows[0].minA0, 18);
+  assert.equal(r.rows[1].key, 'plan');
+  // 목표가 A0(4.0) 이상이면 A0로는 불가
+  assert.equal(targetAnalysis(s, st, 4.2, 18).rows[0].minA0, null);
 });
 
 test('목표 평점 역산', () => {
