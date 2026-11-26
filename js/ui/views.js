@@ -39,7 +39,7 @@ function sidebar(c) {
   const sems = sortSemesters(c.scn.semesters).reverse();
   const navItem = (name, label) => `<button type="button" data-act="nav" data-route="${name}" ${r.name === name ? 'aria-current="page"' : ''}>${label}</button>`;
   return `<aside class="sidebar" aria-label="사이드바">
-    <div class="brand"><div class="brand-mark">4.5</div><div class="brand-name">성적 관리</div></div>
+    <div class="brand"><div class="brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="96 150 320 260"><path d="M112 352 L196 296 L276 324 L392 172 L392 400 L112 400 Z" fill="#2B59C3" fill-opacity="0.55"/><polyline points="112,352 196,296 276,324 392,172" fill="none" stroke="currentColor" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="brand-name">성적 관리</div></div>
     <nav class="nav" aria-label="주 메뉴">
       ${navItem('dashboard', c.sim ? '시뮬레이션 개요' : '대시보드')}
       ${navItem('plans', '재수강·학점포기')}
