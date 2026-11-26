@@ -136,7 +136,8 @@ export function semesterStats(scn, sem, settings, rt, mode = settings.retakeMode
   for (const c of sem.courses) {
     applied += c.credits;
     if (c.gradingType === 'letter') letterCr += c.credits; else pfCr += c.credits;
-    // 학점포기: 성적증명서에만 안 보이고 원래 기록(학기 평점·졸업평점)에는 남는다. 이수 학점에서는 빠진다.
+    // 학점포기: 성적증명서에는 안 보이고 원래 기록(졸업평점)에는 남는다. 이수 학점에서는 빠진다.
+    // 학기 평점에 넣을지는 설정 waiveSemesterMode (기본: 제외 = 성적증명서 기준)
     if (c.waived) {
       waivedCr += c.credits;
       const p = c.gradingType === 'letter' ? effectivePoint(c, settings) : null;
@@ -158,14 +159,16 @@ export function semesterStats(scn, sem, settings, rt, mode = settings.retakeMode
     if (w && w.c.id === c.id && root !== c.id && rt.discarded.has(root)) continue; // 원래 학기로 옮겨짐
     count(c, c, c.credits);
   }
-  const gpa = gradedCr + wCr > 0 ? round2((pts + wPts) / (gradedCr + wCr)) : null; // 원래 기록 (학점포기 포함)
+  const recordGpa = gradedCr + wCr > 0 ? round2((pts + wPts) / (gradedCr + wCr)) : null; // 원래 기록 (학점포기 포함)
   const certGpa = gradedCr > 0 ? round2(pts / gradedCr) : null; // 성적증명서 기준 (학점포기 제외)
+  const include = settings.waiveSemesterMode === 'include';
+  const gpa = include ? recordGpa : certGpa; // 설정에 따라 표시할 학기 평점
   let honors = null;
   if (!isSeasonal(sem) && gpa != null && pending === 0) {
     if (gpa >= 4.0) honors = '우수';
     else if (gpa >= 3.75) honors = '우등';
   }
-  return { applied, earned, gpa, certGpa, waivedCr, gradedCredits: gradedCr + wCr, pending, letterCr, pfCr, honors };
+  return { applied, earned, gpa, certGpa, recordGpa, waivedCr, gradedCredits: include ? gradedCr + wCr : gradedCr, pending, letterCr, pfCr, honors };
 }
 
 export function waivedCredits(scn) {

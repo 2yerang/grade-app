@@ -221,7 +221,7 @@ function courseRow(c, x, sem, { compact = false } = {}) {
     if (x.grade === 'A+') sub.push('A0까지 인정');
   }
   if (disc) sub.push(`재수강으로 폐기 → ${esc(semShort(disc.s))} ${esc(disc.c.grade)}`);
-  if (x.waived) sub.push(`학점포기${x.waivedAt ? ` ${esc(x.waivedAt)}` : ''} · 성적증명서 미표기 · 학기 평점·졸업평점에는 포함 · 이수 학점 제외`);
+  if (x.waived) sub.push(`학점포기${x.waivedAt ? ` ${esc(x.waivedAt)}` : ''} · 성적증명서 미표기 · 졸업평점에는 포함${c.st.waiveSemesterMode === 'include' ? ' · 학기 평점에 포함' : ''} · 이수 학점 제외`);
   if (x.plan === 'retake') sub.push(`재수강 예정${x.planGrade ? ` (예상 ${esc(x.planGrade)})` : ''}`);
   if (x.plan === 'waive' && !x.waived) sub.push('포기 예정');
   const tags = [tag(x.category)];
@@ -299,7 +299,9 @@ function semesterPage(c, sem) {
 function preWaiveNote(c, sem) {
   const stt = c.sum.semStats.get(sem.id);
   if (!stt || !stt.waivedCr) return '';
-  return `<span class="stat-foot">학점포기 ${fmtCr(stt.waivedCr)}학점 포함 (원래 기록) · 성적증명서 기준 ${fmtGpa(stt.certGpa)}</span>`;
+  return c.st.waiveSemesterMode === 'include'
+    ? `<span class="stat-foot">학점포기 ${fmtCr(stt.waivedCr)}학점 포함 (원래 기록) · 제외 시(성적증명서) ${fmtGpa(stt.certGpa)}</span>`
+    : `<span class="stat-foot">학점포기 ${fmtCr(stt.waivedCr)}학점 제외 (성적증명서 기준) · 포함 시(원래 기록) ${fmtGpa(stt.recordGpa)}</span>`;
 }
 
 // ── 시뮬레이션 개요 (간결하게: 요약 카드 → 자세히) ──
@@ -664,6 +666,12 @@ function settingsPage(c) {
       ${[['keep', '원래 기록 유지', '이전 학기 평점은 원래 성적 그대로 · 기본값 (학교 안내 문구 기준)'], ['exclude', '이전 학기에서 제외', '폐기된 과목을 이전 학기 평점·이수 학점에서 빼고 계산'], ['replace', '이전 학기에 새 성적 반영', '재수강 성적을 원래 학기에 넣어 계산']]
         .map(([v, l, h]) => `<label class="radio-row"><input type="radio" name="retakeMode" value="${v}" data-set="retakeMode" ${st.retakeMode === v ? 'checked' : ''}><span style="display:flex;flex-direction:column;gap:2px"><span>${l}</span><span class="small muted">${h}</span></span></label>`).join('')}
       <p class="foot-note">학기 평점과 우수·우등 표시에만 영향 · 누적 평점(증명용)은 같음</p>
+    </section>
+
+    <section class="card"><h2>학점포기 과목의 학기 평점</h2>
+      ${[['exclude', '제외 (성적증명서 기준)', '학점포기 과목을 그 학기 평점에서 빼고 계산 · 기본값'], ['include', '포함 (원래 기록)', '원래 받은 성적 그대로 학기 평점에 넣어 계산']]
+        .map(([v, l, h]) => `<label class="radio-row"><input type="radio" name="waiveSemesterMode" value="${v}" data-set="waiveSemesterMode" ${st.waiveSemesterMode === v ? 'checked' : ''}><span style="display:flex;flex-direction:column;gap:2px"><span>${l}</span><span class="small muted">${h}</span></span></label>`).join('')}
+      <p class="foot-note">학기 평점·우수·우등 표시에만 영향 · 누적 평점(증명용)에서는 항상 제외, 졸업평점에는 항상 포함 · 포털 성적확인서와 대조해 정하세요</p>
     </section>
 
     <section class="card"><div class="card-head"><h2>이수구분</h2><button type="button" class="btn sm" data-act="add-category">+ 추가</button></div>

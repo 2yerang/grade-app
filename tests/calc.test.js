@@ -98,16 +98,18 @@ test('학점포기: W는 누적·이수에서 빠지고 포기 전 평점은 유
   assert.equal(r.waived, 3);
 });
 
-test('학점포기: 학기 평점(원래 기록)·졸업평점에는 포함, 성적증명서·이수 학점에서는 제외', () => {
+test('학점포기: 학기 평점은 설정(기본 제외), 졸업평점 포함, 증명용 누적·이수 학점 제외', () => {
   const s = scn(S(2024, '1', [C({ grade: 'A0' }), C({ grade: 'C0', waived: true })]));
   const r = summarize(s, st);
   const t = r.semStats.get('s2024_1');
-  assert.equal(t.gpa, 3.0); // 원래 기록
-  assert.equal(t.certGpa, 4.0); // 성적증명서 기준
+  assert.equal(t.gpa, 4.0); // 기본: 제외 (성적증명서 기준)
+  assert.equal(t.recordGpa, 3.0); // 원래 기록
   assert.equal(t.earned, 3);
   assert.equal(t.waivedCr, 3);
   assert.equal(r.gpa, 4.0); // 누적(증명용)
   assert.equal(r.preWaiveGpa, 3.0); // 졸업평점
+  const inc = summarize(s, { ...st, waiveSemesterMode: 'include' }).semStats.get('s2024_1');
+  assert.equal(inc.gpa, 3.0);
 });
 
 test('학점포기 제약: P/F·필수 지정·일반선택·재수강·한도', () => {

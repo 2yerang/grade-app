@@ -49,6 +49,7 @@ export function defaultSettings() {
     waiveLimit: 9,
     percentile: { base: 55, mult: 10 },
     retakeMode: 'keep', // keep | exclude | replace
+    waiveSemesterMode: 'exclude', // 학점포기 과목의 학기 평점: exclude(성적증명서 기준) | include(원래 기록)
     categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
     rules: {
       elearningC: { on: true, value: 1 },
