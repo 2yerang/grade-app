@@ -4,7 +4,7 @@ import { defaultSettings } from '../js/domain/grades.js';
 import { summarize, semesterStats, buildRetake, cumulative } from '../js/domain/calc.js';
 import { waiveCheck, planLists, retakeOriginOptions, applyPlans, compareRetakeVsWaive, retakeSemesterImpact, syncFromCurrent } from '../js/domain/rules.js';
 import { checkRegistration } from '../js/domain/registration.js';
-import { planAdvice, requiredAverage, targetAnalysis } from '../js/domain/advisor.js';
+import { planAdvice, requiredAverage, targetAnalysis, pendingLetterCredits } from '../js/domain/advisor.js';
 
 let n = 0;
 const C = (o) => ({ id: `c${++n}`, name: o.name || `과목${n}`, credits: 3, category: '전공핵심', isRequired: false, delivery: 'offline',
@@ -96,6 +96,18 @@ test('학점포기: W는 누적·이수에서 빠지고 포기 전 평점은 유
   assert.equal(r.preWaiveGpa, 3.0);
   assert.equal(r.earned, 3);
   assert.equal(r.waived, 3);
+});
+
+test('학점포기: 학기 평점(원래 기록)·졸업평점에는 포함, 성적증명서·이수 학점에서는 제외', () => {
+  const s = scn(S(2024, '1', [C({ grade: 'A0' }), C({ grade: 'C0', waived: true })]));
+  const r = summarize(s, st);
+  const t = r.semStats.get('s2024_1');
+  assert.equal(t.gpa, 3.0); // 원래 기록
+  assert.equal(t.certGpa, 4.0); // 성적증명서 기준
+  assert.equal(t.earned, 3);
+  assert.equal(t.waivedCr, 3);
+  assert.equal(r.gpa, 4.0); // 누적(증명용)
+  assert.equal(r.preWaiveGpa, 3.0); // 졸업평점
 });
 
 test('학점포기 제약: P/F·필수 지정·일반선택·재수강·한도', () => {
@@ -203,6 +215,27 @@ test('통합 추천: 이미 세운 계획도 후보에 다시 넣고 한도를 �
   assert.equal(r.remain, 6);
   assert.deepEqual(r.rows[0].waives.map((x) => x.c.grade).sort(), ['C0', 'D0']);
   assert.equal(r.rows[0].matchesCurrent, false);
+});
+
+test('추천 (내 재수강 고정): 재수강 예정 과목은 포기 후보에서 빠지고 포기 학점별로 나온다', () => {
+  const r1 = C({ grade: 'C0', category: '전공심화', plan: 'retake', planGrade: 'B+' });
+  const s = scn(S(2024, '1', [C({ grade: 'A0', credits: 12 }), r1, C({ grade: 'D0', category: '전공심화' }), C({ grade: 'C+', category: '전공핵심' }), C({ grade: 'B0', category: '전공핵심' })]));
+  const r = planAdvice(s, st, { mode: 'fixed' });
+  assert.equal(r.rows[0].label, '포기 안 함');
+  for (const row of r.rows) {
+    assert.deepEqual(row.retakes.map((x) => [x.c.id, x.grade]), [[r1.id, 'B+']]); // 내 예상 성적 그대로
+    assert.ok(!row.waives.some((x) => x.c.id === r1.id));
+  }
+  assert.deepEqual(r.rows.map((x) => x.waiveCredits), [0, 3, 6, 9]);
+  for (let i = 1; i < r.rows.length; i++) assert.ok(r.rows[i].gpa > r.rows[i - 1].gpa);
+});
+
+test('목표 역산: 성적 미정 과목 학점을 남은 학점으로, 예상 성적은 반영', () => {
+  const s = scn(S(2024, '1', [C({ grade: 'B0', credits: 15 })]), S(2027, '1', [C({ grade: 'A0', credits: 3 }), C({ grade: null, credits: 6 })], { isPlanned: true }));
+  assert.equal(pendingLetterCredits(s), 6);
+  const r = targetAnalysis(s, st, 3.5, 6);
+  // (3*15 + 4*3) = 57, C = 18 → 3.5*24 - 57 = 27 → 6학점 평균 4.5
+  assert.equal(r.rows[0].need, 4.5);
 });
 
 test('통합 추천: 같은 결과의 다른 조합은 대안으로 묶는다', () => {

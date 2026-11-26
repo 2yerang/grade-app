@@ -1,6 +1,6 @@
 // 앱 진입점: 이벤트 → 동작 → 저장 → 다시 그리기
 import { state, load, save, activeScenario, currentScenario, settings, isSim, uid, today, exportJson, normalize, mergeData, emptyData, nowIso } from './store.js';
-import { renderApp, semTitle } from './ui/views.js';
+import { renderApp, semTitle, adviceOpts } from './ui/views.js';
 import { mountLayer, confirmDialog, alertDialog, promptDialog, actionSheet, pickDialog, toast } from './ui/dialogs.js';
 import { openCourseSheet } from './ui/sheet.js';
 import { esc, icon, fmtGpa, fmtCr } from './ui/h.js';
@@ -16,7 +16,10 @@ function render() { renderApp(root); }
 function commit() { save(); render(); }
 const st = () => settings();
 
+const DETAIL = ['advice', 'target'];
 function go(route) {
+  // 상세 화면(추천·목표 역산)으로 갈 때 돌아올 화면을 기억
+  if (DETAIL.includes(route.name) && !DETAIL.includes(state.ui.route.name)) state.ui.back = state.ui.route;
   state.ui.route = route;
   state.ui.drawer = false;
   render();
@@ -321,14 +324,14 @@ function clearPlans(scn) {
 }
 
 /** 추천 계획을 탭에 적용 */
-function applyPlanSet(scn, row, grade) {
+function applyPlanSet(scn, row) {
   const sim = scn.kind === 'simulation';
   clearPlans(scn);
   for (const x of row.retakes) {
     const c = findCourse(scn, x.c.id)?.c;
     if (!c) continue;
     c.plan = 'retake';
-    c.planGrade = grade;
+    c.planGrade = x.grade;
     if (sim) addAutoRetake(scn, c);
   }
   for (const x of row.waives) {
@@ -523,31 +526,19 @@ async function applyToCurrent() {
   toast(`현재 탭에 과목 ${nc}개${nw ? `, 학점포기 ${nw}건` : ''}을 반영했습니다`);
 }
 
-function runAdvisor() {
-  const scn = activeScenario();
-  state.ui.advisor = { scnId: scn.id, grade: state.ui.advisor?.grade || st().retakeCap };
-  render();
-  root.querySelector('#advice')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-}
-
 function adviceRow(idx) {
   const scn = activeScenario();
-  const adv = state.ui.advisor;
-  if (!adv) return null;
-  const r = planAdvice(scn, st(), { retakeGrade: adv.grade });
-  return { row: r.rows[idx], grade: r.grade };
+  const r = planAdvice(scn, st(), adviceOpts({ scn, st: st() }));
+  return r.rows[idx];
 }
 
 async function applyAdvice(idx, asNew) {
-  const x = adviceRow(idx);
-  if (!x?.row) return;
-  const { row, grade } = x;
+  const row = adviceRow(idx);
+  if (!row) return;
   const from = activeScenario();
   const desc = `재수강 ${row.retakes.length}과목 · 학점포기 ${fmtCr(row.waiveCredits)}학점`;
   if (asNew) {
-    createSim(from, nextSimName('추천 계획'), (s) => applyPlanSet(s, row, grade));
-    state.ui.advisor = { scnId: activeScenario().id, grade };
-    render();
+    createSim(from, nextSimName('추천 계획'), (s) => applyPlanSet(s, row));
     return toast(`${desc}을 적용한 시뮬레이션을 만들었습니다`);
   }
   const hasPlan = allCourses(from).some(({ c }) => c.plan !== 'none');
@@ -555,33 +546,17 @@ async function applyAdvice(idx, asNew) {
     const ok = await confirmDialog({ title: '추천 계획 적용', body: `지금 고른 재수강·포기 계획을 지우고 추천 계획(${desc})으로 바꿉니다.`, ok: '바꾸기' });
     if (!ok) return;
   }
-  applyPlanSet(from, row, grade);
+  applyPlanSet(from, row);
   commit();
   toast(from.kind === 'simulation' ? `${desc}을 이 탭에 적용했습니다` : `${desc}을 계획으로 표시했습니다 (실제 학점포기는 과목 메뉴에서)`);
 }
 
-async function runTarget() {
-  const scn = activeScenario();
-  const g = cumulative(scn, st()).gpa;
-  const prev = state.ui.target;
-  const v = await promptDialog({
-    title: '목표 평점 역산',
-    fields: [
-      { name: 'target', label: '목표 누적 평점', type: 'number', value: prev ? prev.target.toFixed(2) : g != null ? Math.min(4.5, Math.ceil((g + 0.05) * 10) / 10).toFixed(2) : '4.00' },
-      { name: 'credits', label: '다음 학기 등급평가 학점', type: 'number', value: prev ? String(prev.credits) : '18' },
-    ],
-    ok: '계산',
-    validate: (x) => {
-      const t = Number(x.target), c = Number(x.credits);
-      if (!(t > 0 && t <= st().scale)) return `목표는 0~${st().scale} 사이로 입력하세요`;
-      if (!(c > 0 && c <= 30)) return '학점을 올바르게 입력하세요';
-      return null;
-    },
-  });
-  if (!v) return;
-  state.ui.target = { scnId: scn.id, target: Number(v.target), credits: Number(v.credits) };
+function submitTarget(form) {
+  const t = Number(form.target.value.trim()), cr = Number(form.credits.value.trim());
+  if (!(t > 0 && t <= st().scale)) { form.target.classList.add('err'); return toast(`목표는 0~${st().scale} 사이로 입력하세요`); }
+  if (!(cr > 0 && cr <= 60) || Math.round(cr * 2) !== cr * 2) { form.credits.classList.add('err'); return toast('학점을 0.5 단위로 입력하세요'); }
+  state.ui.target = { target: t, credits: cr };
   render();
-  root.querySelector('#target')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
 // ── 설정 ──
@@ -735,13 +710,11 @@ root.addEventListener('click', (e) => {
     case 'export': exportJson(); render(); return toast('백업 파일을 저장했습니다 (파일 앱 › 다운로드)');
     case 'import': return importFile();
     case 'reset': return resetAll();
-    case 'advisor': return runAdvisor();
+    case 'back': return go(state.ui.back || { name: 'dashboard' });
     case 'advice-apply': return applyAdvice(Number(t.dataset.idx), false);
     case 'advice-new': return applyAdvice(Number(t.dataset.idx), true);
-    case 'advice-grade': state.ui.advisor = { ...state.ui.advisor, grade: t.dataset.v }; return render();
-    case 'close-advisor': state.ui.advisor = null; return render();
-    case 'target': return runTarget();
-    case 'close-target': state.ui.target = null; return render();
+    case 'advice-grade': state.ui.advice = { ...state.ui.advice, grade: t.dataset.v }; return render();
+    case 'advice-mode': state.ui.advice = { ...state.ui.advice, mode: t.dataset.v }; return render();
     case 'apply-to-current': return applyToCurrent();
     case 'pull-from-current': return pullFromCurrent();
     case 'plan': return togglePlan(t.dataset.kind, id);
@@ -769,6 +742,10 @@ root.addEventListener('change', (e) => {
     state.ui.compare = sel;
     return render();
   }
+});
+
+root.addEventListener('submit', (e) => {
+  if (e.target.dataset.form === 'target') { e.preventDefault(); submitTarget(e.target); }
 });
 
 root.addEventListener('keydown', (e) => {

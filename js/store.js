@@ -68,8 +68,9 @@ export const state = {
     drawer: false,
     saveError: null,
     toast: null,
-    advisor: null,
-    target: null,
+    advice: {}, // { grade, mode: 'fixed' | 'free' }
+    target: null, // { target, credits }
+    back: null,
     plansSeg: 'retake',
     expanded: {},
     compare: [],

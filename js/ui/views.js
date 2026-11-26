@@ -2,10 +2,10 @@
 import { esc, fmtGpa, fmtPct, fmtCr, delta, gradeBadge, courseGrade, tag, icon, lockMark } from './h.js';
 import { state, activeScenario, currentScenario, settings, isSim } from '../store.js';
 import {
-  summarize, sortSemesters, semName, semShort, isSeasonal, trend, distribution, cumulative, percentile, waivedCredits, allCourses,
+  summarize, sortSemesters, semName, semShort, isSeasonal, trend, distribution, cumulative, percentile, waivedCredits, allCourses, semesterStats,
 } from '../domain/calc.js';
 import { checkRegistration } from '../domain/registration.js';
-import { targetAnalysis, planAdvice } from '../domain/advisor.js';
+import { targetAnalysis, planAdvice, defaultAdviceMode, pendingLetterCredits } from '../domain/advisor.js';
 import { planLists, applyPlans, compareRetakeVsWaive, retakeEffects, findCourse, retakeSemesterImpact } from '../domain/rules.js';
 import { DELIVERY_LABEL, LETTERS, categoryInfo, WAIVABLE_LABEL, gradePoint } from '../domain/grades.js';
 
@@ -188,7 +188,7 @@ function dashboard(c) {
   <div class="stat-grid">
     <div class="stat"><span class="stat-label">누적 평점 · 증명용</span>
       <span class="stat-value"><span class="stat-num">${fmtGpa(s.gpa)}</span><span class="stat-unit">/ ${c.st.scale}</span></span>
-      <span class="stat-foot">포기 전 ${fmtGpa(s.preWaiveGpa)} · 전공 ${fmtGpa(s.majorGpa)}</span></div>
+      <span class="stat-foot">졸업평점 ${fmtGpa(s.preWaiveGpa)} · 전공 ${fmtGpa(s.majorGpa)}</span></div>
     <div class="stat"><span class="stat-label">누적 백분위</span>
       <span class="stat-value"><span class="stat-num">${fmtPct(s.percentile)}</span></span>
       <span class="stat-foot">${c.st.percentile.base} + 평점 × ${c.st.percentile.mult}</span></div>
@@ -221,7 +221,7 @@ function courseRow(c, x, sem, { compact = false } = {}) {
     if (x.grade === 'A+') sub.push('A0까지 인정');
   }
   if (disc) sub.push(`재수강으로 폐기 → ${esc(semShort(disc.s))} ${esc(disc.c.grade)}`);
-  if (x.waived) sub.push(`학점포기${x.waivedAt ? ` ${esc(x.waivedAt)}` : ''} · 포기 전 성적 보관`);
+  if (x.waived) sub.push(`학점포기${x.waivedAt ? ` ${esc(x.waivedAt)}` : ''} · 성적증명서 미표기 · 학기 평점·졸업평점에는 포함 · 이수 학점 제외`);
   if (x.plan === 'retake') sub.push(`재수강 예정${x.planGrade ? ` (예상 ${esc(x.planGrade)})` : ''}`);
   if (x.plan === 'waive' && !x.waived) sub.push('포기 예정');
   const tags = [tag(x.category)];
@@ -283,7 +283,8 @@ function semesterPage(c, sem) {
   ${regInfo ? [...regInfo.errors.filter((e) => !e.courseId).map((e) => `<div class="banner danger">${icon.warn(16)}<span>${esc(e.msg)}</span></div>`), ...regInfo.warnings.filter((e) => !e.courseId).map((e) => `<div class="banner">${esc(e.msg)}</div>`)].join('') : ''}
   <div class="stat-grid cols-3">
     <div class="stat"><span class="stat-label">${seasonal ? '계절학기 평점 · 누적에만 반영' : `학기 평점 · ${modeLabel}`}</span>
-      <span class="stat-value" style="align-items:center;gap:10px"><span class="stat-num">${fmtGpa(stt.gpa)}</span>${stt.honors ? tag(stt.honors, 'accent') : ''}</span></div>
+      <span class="stat-value" style="align-items:center;gap:10px"><span class="stat-num">${fmtGpa(stt.gpa)}</span>${stt.honors ? tag(stt.honors, 'accent') : ''}</span>
+      ${preWaiveNote(c, sem)}</div>
     <div class="stat"><span class="stat-label">신청 / 이수 학점</span>
       <span class="stat-value"><span class="stat-num">${fmtCr(stt.applied)}</span><span class="stat-unit">/ ${fmtCr(stt.earned)}</span></span></div>
     <div class="stat"><span class="stat-label">등급평가 / P·F</span>
@@ -294,49 +295,168 @@ function semesterPage(c, sem) {
     : '<p class="foot-note">확정된 학기에서는 과목 추가 버튼이 숨겨집니다. 학점포기는 과목 메뉴 › 학점포기 적용으로 따로 처리합니다.</p>'}`;
 }
 
-// ── 시뮬레이션 개요 ──
+/** 학점포기 과목이 있는 학기: 학기 평점은 원래 기록(포함), 성적증명서 기준(제외)도 함께 */
+function preWaiveNote(c, sem) {
+  const stt = c.sum.semStats.get(sem.id);
+  if (!stt || !stt.waivedCr) return '';
+  return `<span class="stat-foot">학점포기 ${fmtCr(stt.waivedCr)}학점 포함 (원래 기록) · 성적증명서 기준 ${fmtGpa(stt.certGpa)}</span>`;
+}
+
+// ── 시뮬레이션 개요 (간결하게: 요약 카드 → 자세히) ──
 function simPage(c) {
   const planned = sortSemesters(c.scn.semesters).filter((s) => s.isPlanned);
-  const tgt = state.ui.target && state.ui.target.scnId === c.scn.id ? state.ui.target : null;
   return `${banners(c)}
   <div class="page-head">
     <div><div class="title-row"><h1>${esc(c.scn.name)}</h1>${tag('가정', 'assume')}</div>
     <div class="sub">여기서 바꾼 내용은 현재 탭에 영향을 주지 않습니다 · 점선은 가정이 들어간 항목</div></div>
     <div class="head-actions"><button type="button" class="btn" data-act="pull-from-current">현재에서 불러오기</button><button type="button" class="btn" data-act="apply-to-current">현재에 반영</button></div>
   </div>
-  <div class="actions-row">
-    <button type="button" class="btn primary" data-act="add-planned">+ 예정 학기 추가</button>
-    <button type="button" class="btn" data-act="advisor">재수강·학점포기 추천</button>
-    <button type="button" class="btn" data-act="target">목표 평점 역산</button>
-  </div>
-  ${advisorSection(c)}
-  ${tgt ? targetCard(c, tgt) : ''}
+  ${insights(c)}
   ${planned.length ? planned.map((s) => plannedCard(c, s)).join('') : `<div class="card assumed" style="align-items:flex-start">
       <h2>다음 학기 계획</h2>
-      <p class="muted" style="margin:0">① 예정 학기 추가 → ② 재수강·학점포기에서 "재수강 예정"으로 고른 과목이 자동으로 들어옴 → ③ 새 과목 추가 → ④ 조건 검사와 예상 평점 확인</p>
-      <button type="button" class="btn" data-act="add-planned">+ 예정 학기 추가</button></div>`}
+      <p class="muted" style="margin:0">① 예정 학기 추가 → ② 재수강·학점포기에서 "재수강 예정"으로 고른 과목이 자동으로 들어옴 → ③ 새 과목 추가 → ④ 조건 검사와 예상 평점 확인</p></div>`}
+  <div class="actions-row"><button type="button" class="btn primary" data-act="add-planned">+ 예정 학기 추가</button></div>
   ${chartCard(c)}`;
 }
 
-function targetCard(c, tt) {
-  const a = targetAnalysis(c.scn, c.st, tt.target, tt.credits, { retakeGrade: state.ui.advisor?.grade });
-  const T = tt.target.toFixed(2);
+// ── 추천·목표 상태 ──
+export function adviceOpts(c) {
+  const a = state.ui.advice || {};
+  const hasRetake = allCourses(c.scn).some(({ c: x }) => x.plan === 'retake');
+  const mode = a.mode === 'fixed' && !hasRetake ? 'free' : a.mode || defaultAdviceMode(c.scn);
+  return { retakeGrade: a.grade || c.st.retakeCap, mode, hasRetake };
+}
+export function adviceFor(c) {
+  return planAdvice(c.scn, c.st, adviceOpts(c));
+}
+function targetValues(c) {
+  const t = state.ui.target || {};
+  const g = cumulative(c.scn, c.st).gpa;
+  const pend = pendingLetterCredits(c.scn);
+  return {
+    target: t.target ?? (g != null ? Math.min(c.st.scale, Math.ceil((g + 0.05) * 10) / 10) : 4.0),
+    credits: t.credits ?? (pend || 18),
+    pend,
+    isSet: t.target != null,
+  };
+}
+
+/** 개요용 요약 카드 2개 */
+function insights(c) {
+  const r = adviceFor(c);
+  const best = r.rows[r.rows.length - 1];
+  const o = adviceOpts(c);
+  const adv = best
+    ? `<span class="insight-v"><span class="mono">${fmtGpa(best.gpa)}</span> ${delta(best.gpa, r.baseGpa)}</span>
+       <span class="insight-d">${o.mode === 'fixed' ? `내 재수강 ${best.k}과목 고정 + 포기 ${fmtCr(best.waiveCredits)}학점` : `재수강 ${best.k}과목 + 포기 ${fmtCr(best.waiveCredits)}학점`}${best.matchesCurrent ? ' · 지금 계획과 같음' : r.current.gpa != null && (r.current.retakeIds.size || r.current.waiveIds.size) ? ` · 지금 계획 ${fmtGpa(r.current.gpa)}` : ''}</span>`
+    : '<span class="insight-d">추천할 후보가 없습니다</span>';
+  const tv = targetValues(c);
+  const ta = targetAnalysis(c.scn, c.st, tv.target, tv.credits, o);
+  const t0 = ta.rows[ta.rows.length > 1 ? 1 : 0];
+  const tgt = tv.isSet
+    ? `<span class="insight-v">${t0.already ? '<span class="status-ok">달성</span>' : t0.possible ? `평균 <span class="mono">${t0.need.toFixed(2)}</span>` : '<span class="status-err">불가</span>'}</span>
+       <span class="insight-d">누적 ${tv.target.toFixed(2)} 목표 · 남은 ${fmtCr(tv.credits)}학점 · ${esc(t0.label)}</span>`
+    : '<span class="insight-d">목표 누적 평점을 정하면 필요한 평균과 최소 학점을 계산합니다</span>';
+  return `<div class="insights">
+    <button type="button" class="insight" data-act="nav" data-route="advice"><span class="insight-k">재수강·학점포기 추천</span>${adv}<span class="insight-more">자세히 ›</span></button>
+    <button type="button" class="insight" data-act="nav" data-route="target"><span class="insight-k">목표 평점 역산</span>${tgt}<span class="insight-more">${tv.isSet ? '자세히' : '계산하기'} ›</span></button>
+  </div>`;
+}
+
+function backHead(title, sub) {
+  return `<div class="page-head"><div>
+    <button type="button" class="btn ghost sm back-btn" data-act="back">‹ 돌아가기</button>
+    <h1>${title}</h1>${sub ? `<div class="sub">${sub}</div>` : ''}</div></div>`;
+}
+
+// ── 목표 평점 역산 (상세) ──
+function targetPage(c) {
+  const tv = targetValues(c);
+  const o = adviceOpts(c);
+  const a = targetAnalysis(c.scn, c.st, tv.target, tv.credits, o);
+  const T = tv.target.toFixed(2);
   const r0 = a.rows[0];
   const head = r0.already
     ? `계획 없이도 이미 누적 <b class="mono">${T}</b> 이상입니다.`
     : r0.possible
-      ? `누적 <b class="mono">${T}</b>이 되려면 다음 <b class="mono">${fmtCr(tt.credits)}</b>학점에서 평균 <b class="mono">${r0.need.toFixed(2)}</b> 필요`
-      : `다음 <b class="mono">${fmtCr(tt.credits)}</b>학점을 모두 ${c.st.scale}로 받아도 누적 ${T}에 닿지 않습니다. ${c.st.scale}만 받아도 최소 <b class="mono">${r0.minMax}</b>학점이 필요합니다.`;
+      ? `누적 <b class="mono">${T}</b>이 되려면 남은 <b class="mono">${fmtCr(tv.credits)}</b>학점에서 평균 <b class="mono">${r0.need.toFixed(2)}</b> 필요`
+      : `남은 <b class="mono">${fmtCr(tv.credits)}</b>학점을 모두 ${c.st.scale}로 받아도 누적 ${T}에 닿지 않습니다. ${c.st.scale}만 받아도 최소 <b class="mono">${r0.minMax}</b>학점이 필요합니다.`;
   const needCell = (r) => (r.already ? '<span class="status-ok">달성</span>' : r.possible ? `<b>${r.need.toFixed(2)}</b>` : `<span class="status-err">불가</span> <span class="small muted">(${r.need.toFixed(2)})</span>`);
-  const minCell = (n, r) => (r.already ? '0' : n == null ? '<span class="muted">불가</span>' : n > 60 ? `<span class="muted">${n}학점 (사실상 불가)</span>` : `${n}학점`);
-  return `<section class="card" id="target"><div class="card-head"><h2>목표 평점 역산 · 누적 ${T}</h2>
-      <div style="display:flex;gap:4px"><button type="button" class="btn sm" data-act="target">바꾸기</button><button type="button" class="icon-btn" data-act="close-target" aria-label="닫기">${icon.close(18)}</button></div></div>
+  const minCell = (n, r) => (r.already ? '0' : n == null ? '<span class="muted">불가</span>' : n > 60 ? `<span class="muted">${n} (사실상 불가)</span>` : `${n}학점`);
+  return `${backHead('목표 평점 역산', `등록된 과목과 입력한 예상 성적은 그대로 반영합니다 · 성적 미정 과목 ${fmtCr(tv.pend)}학점이 남은 학점 기본값`)}
+  <form class="card target-form" data-form="target" novalidate>
+    <label>목표 누적 평점<input class="input" name="target" inputmode="decimal" value="${T}" autocomplete="off"></label>
+    <label>남은 등급평가 학점<input class="input" name="credits" inputmode="decimal" value="${fmtCr(tv.credits)}" autocomplete="off"><span class="fld-hint">${tv.pend ? `성적 미정 과목 ${fmtCr(tv.pend)}학점` : '성적 미정 과목 없음 → 다음 학기 학점 입력'}</span></label>
+    <button type="submit" class="btn primary">계산</button>
+  </form>
+  <section class="card">
     <p style="margin:0">${head}</p>
     <div style="overflow-x:auto"><table class="table-plain">
-      <thead><tr><th></th><th>지금 누적</th><th>다음 ${fmtCr(tt.credits)}학점 필요 평균</th><th>${c.st.scale}로 받으면 최소</th><th>A0로 받으면 최소</th></tr></thead>
+      <thead><tr><th></th><th>누적</th><th>필요 평균</th><th>${c.st.scale}만 받으면</th><th>A0만 받으면</th></tr></thead>
       <tbody>${a.rows.map((r) => `<tr><td>${esc(r.label)}</td><td>${fmtGpa(r.gpa)}</td><td>${needCell(r)}</td><td>${minCell(r.minMax, r)}</td><td>${minCell(r.minA0, r)}</td></tr>`).join('')}</tbody>
     </table></div>
-    <span class="foot-note">등급평가 학점 기준 · 재수강 과목 학점은 따로 · 재수강은 ${esc(state.ui.advisor?.grade || c.st.retakeCap)} 가정 · "최소"는 그 성적만 받을 때 필요한 새 학점 수</span></section>`;
+    <span class="foot-note">필요 평균 = 남은 ${fmtCr(tv.credits)}학점에서 받아야 할 평균 · "${c.st.scale}만 / A0만 받으면" = 앞으로 그 성적만 받을 때 필요한 최소 학점 · 등급평가 학점 기준 · 추천 계획은 추천 화면의 설정(${o.mode === 'fixed' ? '내 재수강 고정' : `재수강 ${esc(o.retakeGrade)} 가정`})을 따름</span>
+  </section>`;
+}
+
+// ── 재수강·학점포기 추천 (상세) ──
+function advicePage(c) {
+  const o = adviceOpts(c);
+  const r = adviceFor(c);
+  const cap = gradePoint(c.st.retakeCap, c.st);
+  const gradeOpts = LETTERS.filter((g) => gradePoint(g, c.st) <= cap).slice(0, 3);
+  const cur = r.current;
+  const nFixed = cur.retakeIds.size;
+  const curDesc = cur.retakeIds.size || cur.waiveIds.size
+    ? `지금 고른 계획: 재수강 ${cur.retakeIds.size}과목 · 포기 ${cur.waiveIds.size}과목 → 누적 <b class="mono">${fmtGpa(cur.gpa)}</b>`
+    : '아직 고른 계획이 없습니다';
+  const pill = (x, kind) => {
+    const picked = kind === 'r' ? cur.retakeIds.has(x.c.id) : cur.waiveIds.has(x.c.id);
+    return `<span class="pill${picked ? ' picked' : ''}" title="${esc(semName(x.s))}">${esc(x.c.name)} ${gradeBadge(x.c.grade)}${kind === 'r' ? ` → ${gradeBadge(x.grade)}` : ` <span class="mono small">${fmtCr(x.cr)}</span>`}${picked ? '<span class="pill-mark" aria-label="선택함">✓</span>' : ''}</span>`;
+  };
+  const last = r.rows.length - 1;
+  const names = (l) => l.map((x) => esc(x.name)).join('·');
+  const rows = r.rows.map((row, i) => {
+    const notes = [];
+    if (row.conditional.length) notes.push(`${names(row.conditional.map((x) => x.c))}: 해당 학기 미개설 과목일 때만 포기 가능`);
+    if (row.retakeNeeded) notes.push(`핵심교양 ${fmtCr(row.retakeNeeded)}학점 재이수 필요`);
+    const alts = row.alts.slice(0, 2).map((a) => [
+      a.retake.out.length ? `재수강 ${names(a.retake.out)} 대신 ${names(a.retake.in)}` : '',
+      a.waive.out.length ? `포기 ${names(a.waive.out)} 대신 ${names(a.waive.in)}` : '',
+    ].filter(Boolean).join(', '));
+    const title = o.mode === 'fixed' ? row.label : `${row.label} <span class="muted">+ ${row.waiveCredits ? `포기 ${fmtCr(row.waiveCredits)}학점` : '포기 없음'}</span>`;
+    return `<article class="advice-row${i === last ? ' best' : ''}">
+      <div class="advice-head">
+        <div class="advice-title"><b>${title}</b>${i === last ? tag('가장 높음', 'accent') : ''}${row.matchesCurrent ? tag('지금 계획과 같음', 'ok') : ''}</div>
+        <div class="advice-num"><span class="big-num" style="font-size:22px">${fmtGpa(row.gpa)}</span>${delta(row.gpa, r.baseGpa)}<span class="muted small">백분위 ${fmtPct(row.percentile)}</span></div>
+      </div>
+      ${o.mode === 'fixed' ? '' : `<div class="advice-line"><span class="advice-k">재수강</span>${row.retakes.length ? row.retakes.map((x) => pill(x, 'r')).join('') : '<span class="muted small">없음</span>'}</div>`}
+      ${row.waives.length || o.mode !== 'fixed' ? `<div class="advice-line"><span class="advice-k">학점포기</span>${row.waives.length ? row.waives.map((x) => pill(x, 'w')).join('') : '<span class="muted small">없음</span>'}</div>` : ''}
+      ${alts.length || notes.length ? `<div class="small muted">${[...alts.map((a) => `같은 결과: ${a}`), ...notes].join(' · ')}</div>` : ''}
+      <div class="actions-row">
+        ${row.matchesCurrent ? '' : `<button type="button" class="btn sm primary" data-act="advice-apply" data-idx="${i}">이 탭에 적용</button>`}
+        <button type="button" class="btn sm" data-act="advice-new" data-idx="${i}">새 시뮬레이션으로</button>
+      </div>
+    </article>`;
+  }).join('');
+  const fixedList = r.fixed.length ? `<div class="advice-line"><span class="advice-k">고정 재수강</span>${r.fixed.map((x) => pill(x, 'r')).join('')}</div>` : '';
+  return `${backHead('재수강·학점포기 추천', '등록된 과목과 입력한 예상 성적을 반영해 누적 평점이 가장 높아지는 조합')}
+  <section class="card">
+    <div class="actions-row">
+      <div class="seg" role="group" aria-label="재수강 처리">
+        <button type="button" data-act="advice-mode" data-v="fixed" aria-pressed="${o.mode === 'fixed'}" ${o.hasRetake ? '' : 'disabled'}>내가 고른 재수강 고정${nFixed ? ` (${nFixed})` : ''}</button>
+        <button type="button" data-act="advice-mode" data-v="free" aria-pressed="${o.mode === 'free'}">재수강도 같이 추천</button>
+      </div>
+      ${o.mode === 'free' ? `<span class="small muted">재수강 예상</span><div class="seg" role="group" aria-label="재수강 예상 성적">${gradeOpts.map((g) => `<button type="button" data-act="advice-grade" data-v="${g}" aria-pressed="${o.retakeGrade === g}">${g}</button>`).join('')}</div>` : ''}
+    </div>
+    <span class="foot-note">${o.mode === 'fixed'
+      ? '재수강 예정 과목은 과목마다 정한 예상 성적으로 그대로 두고, 학점포기만 포기 학점별로 추천합니다. 재수강 예정 과목은 포기 후보에서 빠집니다.'
+      : '이미 고른 계획도 후보에 다시 넣고 계산합니다. 재수강 과목 수마다 가장 좋은 조합 하나씩.'}${o.hasRetake ? '' : ' (재수강 예정 과목이 없어 고정 모드는 쓸 수 없습니다)'} · 포기 한도 남음 ${fmtCr(r.remain)}학점</span>
+    ${fixedList}
+    <div class="small">${curDesc}</div>
+  </section>
+  ${r.rows.length ? `<div class="advice-list">${rows}</div>` : '<p class="muted">추천할 재수강·학점포기 후보가 없습니다.</p>'}
+  <p class="foot-note">✓ 지금 고른 계획에 이미 있는 과목 · 학점포기는 되돌릴 수 없으니 실제 신청 전 꼭 확인하세요</p>`;
 }
 
 function plannedCard(c, s) {
@@ -355,65 +475,6 @@ function plannedCard(c, s) {
     ${info ? info.errors.filter((e) => !e.courseId).map((e) => `<span class="fld-err">${esc(e.msg)}</span>`).join('') : ''}
     ${courseTable(c, s)}
     <button type="button" class="btn dashed" data-act="add-course" data-sem="${esc(s.id)}">+ 과목 추가</button>
-  </section>`;
-}
-
-export function adviceFor(c) {
-  const adv = state.ui.advisor;
-  if (!adv || adv.scnId !== c.scn.id) return null;
-  return planAdvice(c.scn, c.st, { retakeGrade: adv.grade });
-}
-
-function advisorSection(c) {
-  const r = adviceFor(c);
-  if (!r) return '';
-  const cap = gradePoint(c.st.retakeCap, c.st);
-  const gradeOpts = LETTERS.filter((g) => gradePoint(g, c.st) <= cap).slice(0, 3);
-  const cur = r.current;
-  const curDesc = cur.retakeIds.size || cur.waiveIds.size
-    ? `지금 고른 계획: 재수강 ${cur.retakeIds.size}과목 · 포기 ${cur.waiveIds.size}과목 → 누적 <b class="mono">${fmtGpa(cur.gpa)}</b>`
-    : '아직 고른 계획이 없습니다';
-  const pill = (x, kind) => {
-    const picked = kind === 'r' ? cur.retakeIds.has(x.c.id) : cur.waiveIds.has(x.c.id);
-    return `<span class="pill${picked ? ' picked' : ''}" title="${esc(semName(x.s))}">${esc(x.c.name)} ${gradeBadge(x.c.grade)}${kind === 'r' ? ` → ${gradeBadge(r.grade)}` : ` <span class="mono small">${fmtCr(x.cr)}학점</span>`}${picked ? '<span class="pill-mark" aria-label="선택함">✓</span>' : ''}</span>`;
-  };
-  const last = r.rows.length - 1;
-  const rows = r.rows.map((row, i) => {
-    const notes = [];
-    for (const x of row.conditional) notes.push(`${esc(x.c.name)}: ${esc(x.c.category)}는 해당 학기 미개설 과목일 때만 포기 가능`);
-    if (row.retakeNeeded) notes.push(`핵심교양 ${fmtCr(row.retakeNeeded)}학점 재이수 필요`);
-    const names = (l) => l.map((x) => esc(x.name)).join('·');
-    const alts = row.alts.slice(0, 3).map((a) => [
-      a.retake.out.length ? `재수강 ${names(a.retake.out)} 대신 ${names(a.retake.in)}` : '',
-      a.waive.out.length ? `포기 ${names(a.waive.out)} 대신 ${names(a.waive.in)}` : '',
-    ].filter(Boolean).join(', '));
-    return `<article class="advice-row${i === last ? ' best' : ''}">
-      <div class="advice-head">
-        <div class="advice-title"><b>${row.k ? `재수강 ${row.k}과목` : '재수강 없이'}</b><span class="muted"> + ${row.waiveCredits ? `학점포기 ${fmtCr(row.waiveCredits)}학점` : '포기 없음'}</span>
-          ${i === last ? tag('가장 높음', 'accent') : ''}${row.matchesCurrent ? tag('지금 계획과 같음', 'ok') : ''}</div>
-        <div class="advice-num"><span class="big-num" style="font-size:24px">${fmtGpa(row.gpa)}</span>${delta(row.gpa, r.baseGpa)}<span class="muted small">백분위 ${fmtPct(row.percentile)}</span></div>
-      </div>
-      <div class="advice-line"><span class="advice-k">재수강</span>${row.retakes.length ? row.retakes.map((x) => pill(x, 'r')).join('') : '<span class="muted small">없음</span>'}</div>
-      <div class="advice-line"><span class="advice-k">학점포기</span>${row.waives.length ? row.waives.map((x) => pill(x, 'w')).join('') : '<span class="muted small">없음</span>'}</div>
-      ${alts.length ? `<div class="small muted">같은 결과: ${alts.join(' / ')}</div>` : ''}
-      ${notes.map((n) => `<div class="small" style="color:var(--danger)">${n}</div>`).join('')}
-      <div class="actions-row">
-        ${row.matchesCurrent ? '' : `<button type="button" class="btn sm primary" data-act="advice-apply" data-idx="${i}">이 탭에 적용</button>`}
-        <button type="button" class="btn sm" data-act="advice-new" data-idx="${i}">새 시뮬레이션으로</button>
-      </div>
-    </article>`;
-  }).join('');
-  return `<section class="card" id="advice">
-    <div class="card-head"><h2>재수강·학점포기 추천</h2><button type="button" class="icon-btn" data-act="close-advisor" aria-label="닫기">${icon.close(18)}</button></div>
-    <span class="foot-note">이미 고른 계획도 후보에 다시 넣고, 계획이 없는 상태(누적 ${fmtGpa(r.baseGpa)})에서 다시 계산했습니다. 재수강 과목 수마다 누적 평점이 가장 높은 조합 하나씩입니다.</span>
-    <div class="actions-row">
-      <span class="small muted">재수강 예상 성적</span>
-      <div class="seg" role="group" aria-label="재수강 예상 성적">${gradeOpts.map((g) => `<button type="button" data-act="advice-grade" data-v="${g}" aria-pressed="${r.grade === g}">${g}</button>`).join('')}</div>
-      <span class="small muted">포기 한도 남음 ${fmtCr(r.remain)}학점</span>
-    </div>
-    <div class="small">${curDesc}</div>
-    ${r.rows.length ? `<div class="advice-list">${rows}</div>` : '<p class="muted" style="margin:0">추천할 재수강·학점포기 후보가 없습니다.</p>'}
-    <span class="foot-note">✓ 표시는 지금 고른 계획에 이미 들어 있는 과목 · 재수강을 늘릴수록 다음 학기 부담도 커집니다 · 학점포기는 되돌릴 수 없으니 실제 신청 전 꼭 확인하세요</span>
   </section>`;
 }
 
@@ -451,7 +512,7 @@ function resultPanel(c) {
       <span class="rp-label">${lastPlanned ? esc(semName(lastPlanned)) : '예정 학기 없음'}</span></div>
     <div class="rp-block"><span class="rp-label">학점포기</span>
       <div class="rp-row"><span class="mono">${fmtCr(s.waived)} / ${fmtCr(c.st.waiveLimit)}학점</span>${s.waived !== cs.waived ? `<span class="muted small">현재 ${fmtCr(cs.waived)}</span>` : ''}</div>
-      ${s.waived ? `<span class="rp-label">포기 전 누적 ${fmtGpa(s.preWaiveGpa)}</span>` : ''}</div>
+      ${s.waived ? `<span class="rp-label">졸업평점(포기 포함) ${fmtGpa(s.preWaiveGpa)}</span>` : ''}</div>
     ${effects.length ? `<div class="rp-block rp-detail"><span class="rp-label">재수강 효과 · 누적 평점</span>
       <div class="rp-list">${effects.map((e) => `<div><span>${esc(e.c.name)} ${esc(e.orig?.c.grade || '')} → ${esc(e.c.grade)}</span>${e.delta != null ? `<span class="delta ${e.delta > 0 ? 'up' : e.delta < 0 ? 'down' : 'zero'}">${e.delta > 0 ? '+' : ''}${e.delta.toFixed(2)}</span>` : ''}</div>`).join('')}</div></div>` : ''}
     ${impacts.length ? `<div class="rp-block rp-detail"><span class="rp-label">재수강 시 이전 학기 평점</span>
@@ -514,9 +575,8 @@ function plansPage(c) {
   L.excluded.forEach((e) => { exclCounts[e.reason] = (exclCounts[e.reason] || 0) + 1; });
   return `${banners(c)}
   <div class="page-head"><div><h1>재수강·학점포기</h1><div class="sub">과목마다 계획은 하나만 · 학점포기는 시뮬레이션에서 비교 후 실제 신청한 뒤 현재에 반영</div></div>
-    <div class="head-actions"><button type="button" class="btn" data-act="advisor">추천 받기</button><button type="button" class="btn" data-act="target">목표 평점 역산</button></div></div>
-  ${state.ui.target && state.ui.target.scnId === c.scn.id ? targetCard(c, state.ui.target) : ''}
-  ${advisorSection(c)}
+    </div>
+  ${insights(c)}
   <div class="plans-summary">
     <div class="stat"><span class="stat-label">학점포기 한도</span><span class="stat-value"><span class="stat-num">${fmtCr(used + plannedWaive)}</span><span class="stat-unit">/ ${fmtCr(c.st.waiveLimit)}학점</span></span><span class="stat-foot">${plannedWaive ? `포기함 ${fmtCr(used)} · 예정 ${fmtCr(plannedWaive)}` : '사용 학점'}</span></div>
     <div class="stat"><span class="stat-label">재수강 예정</span><span class="stat-value"><span class="stat-num">${nRetake}</span><span class="stat-unit">과목</span></span></div>
@@ -561,7 +621,7 @@ function comparePage(c) {
         ${line('백분위', (r) => fmtPct(r.sm.percentile), 1)}
         ${line('이수 학점', (r) => fmtCr(r.sm.earned), 0)}
         ${line('학점포기', (r) => `${fmtCr(r.sm.waived)} / ${fmtCr(c.st.waiveLimit)}`, null)}
-        <tr><td>포기 전 누적</td>${rows.map((r) => `<td>${fmtGpa(r.sm.preWaiveGpa)}</td>`).join('')}</tr>
+        <tr><td>졸업평점 (포기 포함)</td>${rows.map((r) => `<td>${fmtGpa(r.sm.preWaiveGpa)}</td>`).join('')}</tr>
         <tr><td>수강신청 조건</td>${rows.map((r) => `<td>${r.err ? `<span class="status-err">오류 ${r.err}건</span>` : r.s.kind === 'current' ? '—' : '<span class="status-ok">통과</span>'}</td>`).join('')}</tr>
       </tbody>
     </table>
@@ -650,6 +710,8 @@ export function renderApp(el) {
   else if (r.name === 'plans') page = plansPage(c);
   else if (r.name === 'settings') page = settingsPage(c);
   else if (r.name === 'compare') page = comparePage(c);
+  else if (r.name === 'advice') page = advicePage(c);
+  else if (r.name === 'target') page = targetPage(c);
   const body = el.querySelector('.content');
   const scroll = body && el.dataset.route === JSON.stringify(r) + c.scn.id ? body.scrollTop : 0;
   el.innerHTML = `<div class="app${state.ui.drawer ? ' drawer-open' : ''}">

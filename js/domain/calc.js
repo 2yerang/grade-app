@@ -92,7 +92,7 @@ export function effectiveCategory(c, rt, settings) {
 
 /**
  * 누적(증명용) 평점.
- * opts.ignoreWaive: 포기 전 평점
+ * opts.ignoreWaive: 졸업평점 (학점포기 과목 포함)
  * opts.filter: (c) => boolean  등급평가 과목 필터 (전공 평점 등)
  */
 export function cumulative(scn, settings, opts = {}) {
@@ -126,6 +126,7 @@ export function percentile(gpa, settings) {
 export function semesterStats(scn, sem, settings, rt, mode = settings.retakeMode) {
   rt = rt || buildRetake(scn, settings);
   let applied = 0, pts = 0, gradedCr = 0, earned = 0, pending = 0, letterCr = 0, pfCr = 0;
+  let wPts = 0, wCr = 0, waivedCr = 0; // 학점포기 과목 (원래 성적)
   const count = (c, gradeCourse, credits) => {
     const p = effectivePoint(gradeCourse, settings);
     pts += p * credits;
@@ -135,7 +136,13 @@ export function semesterStats(scn, sem, settings, rt, mode = settings.retakeMode
   for (const c of sem.courses) {
     applied += c.credits;
     if (c.gradingType === 'letter') letterCr += c.credits; else pfCr += c.credits;
-    if (c.waived) continue;
+    // 학점포기: 성적증명서에만 안 보이고 원래 기록(학기 평점·졸업평점)에는 남는다. 이수 학점에서는 빠진다.
+    if (c.waived) {
+      waivedCr += c.credits;
+      const p = c.gradingType === 'letter' ? effectivePoint(c, settings) : null;
+      if (p != null) { wPts += p * c.credits; wCr += c.credits; }
+      continue;
+    }
     if (c.grade == null) { pending += c.credits; continue; }
     if (c.gradingType !== 'letter') { if (c.grade === 'P') earned += c.credits; continue; }
     const win = rt.discarded.get(c.id);
@@ -151,13 +158,14 @@ export function semesterStats(scn, sem, settings, rt, mode = settings.retakeMode
     if (w && w.c.id === c.id && root !== c.id && rt.discarded.has(root)) continue; // 원래 학기로 옮겨짐
     count(c, c, c.credits);
   }
-  const gpa = gradedCr > 0 ? round2(pts / gradedCr) : null;
+  const gpa = gradedCr + wCr > 0 ? round2((pts + wPts) / (gradedCr + wCr)) : null; // 원래 기록 (학점포기 포함)
+  const certGpa = gradedCr > 0 ? round2(pts / gradedCr) : null; // 성적증명서 기준 (학점포기 제외)
   let honors = null;
   if (!isSeasonal(sem) && gpa != null && pending === 0) {
     if (gpa >= 4.0) honors = '우수';
     else if (gpa >= 3.75) honors = '우등';
   }
-  return { applied, earned, gpa, gradedCredits: gradedCr, pending, letterCr, pfCr, honors };
+  return { applied, earned, gpa, certGpa, waivedCr, gradedCredits: gradedCr + wCr, pending, letterCr, pfCr, honors };
 }
 
 export function waivedCredits(scn) {
