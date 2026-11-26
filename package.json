@@ -1,0 +1,10 @@
+{
+  "name": "grade-webapp",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "한양대 학사 규정 기준 학기별 성적 관리 웹앱 (빌드 없는 정적 PWA)",
+  "scripts": {
+    "test": "node --test"
+  }
+}
